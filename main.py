@@ -1,44 +1,180 @@
 if __name__ == '__main__':
+
     # importing python modules:S1
     try:
         from pathlib import Path
-        import urllib.request
         import os
-        # import json
-        # from typing import List
-
-        # redirect model caches
-        parent_folder_path = Path.cwd()
-        models_folder_path = parent_folder_path / "models"
-        os.environ["UNSTRUCTURED_HOME"] = str(models_folder_path)
-        os.environ["HF_HOME"] = str(models_folder_path / "hf_cache")
-
-        from unstructured.partition.pdf import partition_pdf
-        # from unstructured.chunking.title import chunk_by_title
-        # from langchain_core.documents import Document
-        # from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-        # from langchain_chroma import Chroma
-        # from langchain_core.messages import HumanMessage
+        import json
+        from typing import List
     except Exception as error:
         print(f'ERROR - [Main:S1] - {error}')
+
 
     # define folder path:S2
     try:
         parent_folder_path = Path.cwd()
-        input_folder_path = parent_folder_path / 'input'
-        pdf_document_path = input_folder_path / 'Sample-DOC.pdf'
+        models_folder_path = parent_folder_path / "models"
+        input_folder_path = parent_folder_path / "input"
+        pdf_document_path = input_folder_path / "Sample-DOC.pdf"
     except Exception as error:
         print(f'ERROR - [Main:S2] - {error}')
 
-    # partition pdf document:S3
+
+    # redirect model caches:S3
     try:
-        pdf_doc_elements = partition_pdf(
-            filename = str(pdf_document_path),  # Path to your PDF file
-            strategy = "hi_res", # Use the most accurate (but slower) processing method of extraction
-            infer_table_structure = True, # Keep tables as structured HTML, not jumbled text
-            extract_image_block_types = ["Image"], # Grab images found in the PDF
-            extract_image_block_to_payload = True # Store images as base64 data you can actually use
-        )
-        print(pdf_doc_elements)
+        os.environ["UNSTRUCTURED_HOME"] = str(models_folder_path)
+        os.environ["HF_HOME"] = str(models_folder_path / "hf_cache") #type: ignore
+        os.environ["TRANSFORMERS_CACHE"] = str(models_folder_path / "hf_cache") #type: ignore
+        os.environ["TORCH_HOME"] = str(models_folder_path / "torch_cache") #type: ignore
     except Exception as error:
         print(f'ERROR - [Main:S3] - {error}')
+
+
+    # importing unstructured modules:S4
+    try:
+        from unstructured.partition.pdf import partition_pdf
+        from unstructured.chunking.title import chunk_by_title
+        from langchain_core.documents import Document
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import HumanMessage
+    except Exception as error:
+        print(f'ERROR - [Main:S4] - {error}')
+
+
+    # partition pdf document:S5
+    try:
+        pdf_doc_elements = partition_pdf(
+            filename = str(pdf_document_path),
+            strategy = "hi_res",
+            infer_table_structure = True,
+            extract_image_block_types = ["Image"],
+            extract_image_block_to_payload = True
+        )
+    except Exception as error:
+        print(f'ERROR - [Main:S5] - {error}')
+
+
+    # creating chunks by title:S6
+    try:
+        title_chunks = chunk_by_title(
+            pdf_doc_elements,
+            max_characters = 3000,
+            new_after_n_chars = 2400,
+            combine_text_under_n_chars = 500
+        )
+    except Exception as error:
+        print(f'ERROR - [Main:S6] - {error}')
+
+
+    # preparing multimodal content extraction:S7
+    try:
+        separated_chunk_data = []
+        for chunk in title_chunks:
+            content_data = {
+                "text": chunk.text,
+                "tables": [],
+                "images": [],
+                "types": ["text"]
+            }
+            if hasattr(chunk, "metadata") and hasattr(chunk.metadata, "orig_elements"):
+                for element in chunk.metadata.orig_elements: #type: ignore
+                    element_type = type(element).__name__
+                    if element_type == "Table":
+                        content_data["types"].append("table")
+                        table_html = getattr(
+                            element.metadata,
+                            "text_as_html",
+                            element.text
+                        )
+                        content_data["tables"].append(table_html)
+                    elif element_type == "Image":
+                        if hasattr(element.metadata, "image_base64"):
+                            content_data["types"].append("image")
+                            content_data["images"].append(
+                                element.metadata.image_base64
+                            )
+            content_data["types"] = list(set(content_data["types"]))
+            separated_chunk_data.append(content_data)
+    except Exception as error:
+        print(f'ERROR - [Main:S7] - {error}')
+
+
+    # initialize LLM for multimodal summarization:S8
+    try:
+        llm = ChatOpenAI(
+            model="gpt-4o",
+            temperature=0
+        )
+    except Exception as error:
+        print(f'ERROR - [Main:S8] - {error}')
+
+
+    # processing chunks and generating AI summaries:S9
+    try:
+        rag_documents = []
+        total_chunks = len(separated_chunk_data)
+        print("🧠 Processing chunks with AI summaries...")
+        for index, content_data in enumerate(separated_chunk_data):
+            current_chunk = index + 1
+            print(f"Processing chunk {current_chunk}/{total_chunks}")
+            text_content = content_data["text"]
+            tables = content_data["tables"]
+            images = content_data["images"]
+            if tables or images:
+                print("Creating AI summary for mixed content...")
+                try:
+                    prompt_text = f"""You are creating a searchable description for document content retrieval.
+                    CONTENT TO ANALYZE:
+                    TEXT CONTENT:
+                    {text_content}
+                    """
+                    if tables:
+                        prompt_text += "TABLES:\n"
+                        for i, table in enumerate(tables):
+                            prompt_text += f"Table {i+1}:\n{table}\n\n"
+                    prompt_text += """
+                    YOUR TASK:
+                    Generate a comprehensive, searchable description that covers:
+
+                    1. Key facts, numbers, and data points from text and tables
+                    2. Main topics and concepts discussed
+                    3. Questions this content could answer
+                    4. Visual content analysis (charts, diagrams, patterns in images)
+                    5. Alternative search terms users might use
+
+                    Make it detailed and searchable.
+
+                    SEARCHABLE DESCRIPTION:"""
+
+                    message_content = [
+                        {"type": "text", "text": prompt_text}
+                    ]
+                    for image_base64 in images:
+                        message_content.append({ #type: ignore
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_base64}"
+                            }
+                        })
+                    message = HumanMessage(content=message_content) #type: ignore
+                    response = llm.invoke([message])
+                    enhanced_content = response.content
+                except Exception as ai_error:
+                    print(f"❌ AI summary failed: {ai_error}")
+                    enhanced_content = text_content
+            else:
+                enhanced_content = text_content
+            doc = Document(
+                page_content=enhanced_content, #type: ignore
+                metadata={
+                    "original_content": json.dumps({
+                        "raw_text": text_content,
+                        "tables_html": tables,
+                        "images_base64": images
+                    })
+                }
+            )
+            rag_documents.append(doc)
+        print(f"✅ Processed {len(rag_documents)} chunks")
+    except Exception as error:
+        print(f'ERROR - [Main:S9] - {error}')
