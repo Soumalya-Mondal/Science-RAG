@@ -6,6 +6,7 @@ if __name__ == '__main__':
         import os
         import json
         from typing import List
+        from dotenv import load_dotenv
     except Exception as error:
         print(f'ERROR - [Main:S1] - {error}')
 
@@ -20,53 +21,65 @@ if __name__ == '__main__':
         print(f'ERROR - [Main:S2] - {error}')
 
 
-    # redirect model caches:S3
+    # load environment variables:S3
+    try:
+        load_dotenv()
+        AZURE_API_ENDPOINT = os.getenv("AZURE_OPENAI_API_ENDPOINT")
+        AZURE_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+        AZURE_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
+        AZURE_LLM_DEPLOYMENT = os.getenv("AZURE_OPENAI_API_LLM_MODEL_NAME")
+    except Exception as error:
+        print(f'ERROR - [Main:S3] - {error}')
+
+
+    # redirect model caches:S4
     try:
         os.environ["UNSTRUCTURED_HOME"] = str(models_folder_path)
         os.environ["HF_HOME"] = str(models_folder_path / "hf_cache") #type: ignore
         os.environ["TRANSFORMERS_CACHE"] = str(models_folder_path / "hf_cache") #type: ignore
         os.environ["TORCH_HOME"] = str(models_folder_path / "torch_cache") #type: ignore
     except Exception as error:
-        print(f'ERROR - [Main:S3] - {error}')
+        print(f'ERROR - [Main:S4] - {error}')
 
 
-    # importing unstructured modules:S4
+    # importing unstructured modules:S5
     try:
         from unstructured.partition.pdf import partition_pdf
         from unstructured.chunking.title import chunk_by_title
         from langchain_core.documents import Document
-        from langchain_openai import ChatOpenAI
+        from langchain_openai import AzureChatOpenAI
         from langchain_core.messages import HumanMessage
     except Exception as error:
-        print(f'ERROR - [Main:S4] - {error}')
+        print(f'ERROR - [Main:S5] - {error}')
 
 
-    # partition pdf document:S5
+    # partition pdf document:S6
     try:
         pdf_doc_elements = partition_pdf(
             filename = str(pdf_document_path),
             strategy = "hi_res",
+            languages=["eng"],
             infer_table_structure = True,
             extract_image_block_types = ["Image"],
             extract_image_block_to_payload = True
         )
     except Exception as error:
-        print(f'ERROR - [Main:S5] - {error}')
+        print(f'ERROR - [Main:S6] - {error}')
 
 
-    # creating chunks by title:S6
+    # creating chunks by title:S7
     try:
         title_chunks = chunk_by_title(
             pdf_doc_elements,
             max_characters = 3000,
             new_after_n_chars = 2400,
-            combine_text_under_n_chars = 500
+            combine_text_under_n_chars=500
         )
     except Exception as error:
-        print(f'ERROR - [Main:S6] - {error}')
+        print(f'ERROR - [Main:S7] - {error}')
 
 
-    # preparing multimodal content extraction:S7
+    # preparing multimodal content extraction:S8
     try:
         separated_chunk_data = []
         for chunk in title_chunks:
@@ -96,20 +109,23 @@ if __name__ == '__main__':
             content_data["types"] = list(set(content_data["types"]))
             separated_chunk_data.append(content_data)
     except Exception as error:
-        print(f'ERROR - [Main:S7] - {error}')
-
-
-    # initialize LLM for multimodal summarization:S8
-    try:
-        llm = ChatOpenAI(
-            model="gpt-4o",
-            temperature=0
-        )
-    except Exception as error:
         print(f'ERROR - [Main:S8] - {error}')
 
 
-    # processing chunks and generating AI summaries:S9
+    # initialize Azure OpenAI LLM for multimodal summarization:S9
+    try:
+        llm = AzureChatOpenAI(
+            azure_endpoint=AZURE_API_ENDPOINT,
+            api_key=AZURE_API_KEY, #type: ignore
+            api_version=AZURE_API_VERSION,
+            azure_deployment=AZURE_LLM_DEPLOYMENT,
+            temperature=0
+        )
+    except Exception as error:
+        print(f'ERROR - [Main:S9] - {error}')
+
+
+    # processing chunks and generating AI summaries:S10
     try:
         rag_documents = []
         total_chunks = len(separated_chunk_data)
@@ -125,6 +141,7 @@ if __name__ == '__main__':
                 try:
                     prompt_text = f"""You are creating a searchable description for document content retrieval.
                     CONTENT TO ANALYZE:
+
                     TEXT CONTENT:
                     {text_content}
                     """
@@ -145,7 +162,6 @@ if __name__ == '__main__':
                     Make it detailed and searchable.
 
                     SEARCHABLE DESCRIPTION:"""
-
                     message_content = [
                         {"type": "text", "text": prompt_text}
                     ]
@@ -158,14 +174,14 @@ if __name__ == '__main__':
                         })
                     message = HumanMessage(content=message_content) #type: ignore
                     response = llm.invoke([message])
-                    enhanced_content = response.content
+                    enhanced_content = str(response.content)
                 except Exception as ai_error:
                     print(f"❌ AI summary failed: {ai_error}")
                     enhanced_content = text_content
             else:
                 enhanced_content = text_content
             doc = Document(
-                page_content=enhanced_content, #type: ignore
+                page_content=enhanced_content,
                 metadata={
                     "original_content": json.dumps({
                         "raw_text": text_content,
@@ -176,5 +192,14 @@ if __name__ == '__main__':
             )
             rag_documents.append(doc)
         print(f"✅ Processed {len(rag_documents)} chunks")
+        # DEBUG: print processed chunk
+        print("\n---------------- CHUNK OUTPUT ----------------")
+        print(f"Chunk Number: {current_chunk}")
+        print(f"Text Length: {len(text_content)}")
+        print(f"Tables Found: {len(tables)}")
+        print(f"Images Found: {len(images)}")
+        print("\nAI Enhanced Content Preview:\n")
+        print(enhanced_content[:800])  # prevent huge console spam
+        print("\n----------------------------------------------\n")
     except Exception as error:
-        print(f'ERROR - [Main:S9] - {error}')
+        print(f'ERROR - [Main:S10] - {error}')
